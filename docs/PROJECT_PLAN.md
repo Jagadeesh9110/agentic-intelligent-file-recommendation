@@ -137,7 +137,7 @@ The initial system is explicitly single-user. Multi-user accounts, shared collec
 
 ### 2.6 Security and privacy requirements
 
-- Restrict ingestion to allowlisted roots; normalize and validate every path.
+- Restrict Next.js ingestion selections to approved roots; normalize and validate every path before content transfer.
 - Do not allow a search result to expose a file outside the user’s permitted roots.
 - Use parameterized queries and framework validation for all API inputs.
 - Store passwords only if authentication is added; use a proven password-hashing library.
@@ -289,21 +289,22 @@ The initial system remains single-user and may run both services on one machine.
 - **Python AI service:** document extraction/processing, chunking, embedding generation, semantic retrieval, hybrid retrieval/RRF, optional reranking, bounded agentic orchestration, and retrieval evaluation.
 - **PostgreSQL:** shared physical database with explicitly separated table ownership. It provides application persistence, AI indexing data, PostgreSQL full-text search, and pgvector.
 
-Neither service is an unrestricted peer writer. Each service writes only its owned tables and reads shared data only through documented contracts or approved read-only views.
+Neither service is an unrestricted peer writer. Each service writes only its owned tables and communicates across the service boundary through documented internal contracts; no cross-schema views are required initially.
 
 ### 5.2 File ingestion and content extraction
 
-The initial ingestion method is an explicit user-triggered scan: the single user selects one approved file or directory in the UI (or supplies it through the API), and then starts ingestion. The service scans only that selection and its allowed descendants; it does not watch the file system continuously and does not ingest arbitrary paths.
+The initial ingestion method is an explicit user-triggered scan: the single user selects one approved file or directory in the UI (or supplies it through the API), and then starts ingestion. Next.js authorizes that selection and transfers approved content and metadata to FastAPI; FastAPI does not scan arbitrary paths or watch the file system continuously.
 
 1. The user selects an approved source directory or file and starts an ingestion job.
-2. The ingestion coordinator validates the path and computes a checksum.
+2. Next.js authorizes the selected file or directory and computes or requests checksums for approved content.
 3. The file catalog creates or updates the file record.
 4. A format adapter extracts text and normalized metadata.
-5. Extraction status, warnings, and failures are stored.
-6. The chunker creates stable chunks with source offsets or page/sheet context.
-7. The embedding component generates vectors in batches.
-8. A transaction stores chunks, embeddings, and searchable text.
-9. Re-indexing replaces stale chunks only after the new extraction succeeds.
+5. The AI service receives approved file content through the internal ingestion contract; it does not access arbitrary local paths.
+6. Extraction status, warnings, and failures are stored in the AI processing run.
+7. The chunker creates stable chunks with source offsets or page/sheet context.
+8. The embedding component generates vectors in batches.
+9. A transaction stores chunks, embeddings, and searchable text.
+10. Re-indexing replaces stale chunks only after the new extraction succeeds.
 
 For the target 300–500-file corpus, the first implementation may run the scan as a bounded background task so the UI remains responsive; a separate worker service is not required. The design should expose an ingestion interface so a durable worker can be added later without changing the API contract. Re-indexing is explicit or triggered by a later scan that detects a changed checksum.
 
@@ -325,54 +326,58 @@ For the target 300–500-file corpus, the first implementation may run the scan 
 
 - Frontend to Next.js: same-origin calls to versioned Route Handler endpoints.
 - Next.js to FastAPI: internal versioned HTTP/JSON APIs for AI-related operations only. The browser does not call FastAPI directly.
-- FastAPI to PostgreSQL: SQLAlchemy transactions and parameterized queries for AI-owned tables and approved retrieval views.
+- FastAPI to PostgreSQL: SQLAlchemy transactions and parameterized queries for AI-owned `ai` tables.
 - Next.js to PostgreSQL: Prisma for application-owned tables such as the file catalog, search history, access events, and user preferences.
-- FastAPI to file system: allowlisted, validated local paths through the AI ingestion adapter; the Route Handler authorizes the user request before forwarding it.
+- File content transfer: Next.js authorizes the selected file or directory and sends approved content and metadata through the internal ingestion contract. FastAPI does not access arbitrary local filesystem paths.
 - Service contracts: Pydantic request/response schemas define ingestion, extraction, search, reranking, trace, and error payloads. Next.js validates the same contract at its boundary and must not reimplement retrieval logic.
-- Database migrations: Prisma migrations are authoritative for application-owned tables. Any Alembic/SQL migrations are restricted to AI-owned tables. Shared tables, extensions, indexes, and views require an explicitly agreed migration owner and a single ordered migration process; neither service may run uncontrolled schema changes.
+- Database migrations: Prisma migrations own `app` objects and Alembic migrations own `ai` objects. The database administrator performs initial pgvector setup; no cross-schema views or additional shared migration objects are required initially.
 
 ## 6. Database Design
 
-The initial schema should remain small and normalized. Embeddings belong to chunks because different portions of one file have different meanings.
+The initial schema remains small and normalized. Embeddings belong to chunks because different portions of one file have different meanings. The database has two service-owned schemas, `app` and `ai`, in one PostgreSQL database.
 
 ### 6.1 Service ownership and migration boundary
 
 Both services use the same PostgreSQL database, but ownership is explicit:
 
-- **Next.js/Prisma owns:** `users`, `files` as the application catalog, `search_queries`, `search_result_events`, `file_access_events`, and `user_preferences`.
-- **FastAPI/SQLAlchemy owns:** `file_chunks`, `chunk_embeddings`, ingestion/extraction status details, and AI execution trace/evaluation tables if durable storage is required.
-- **Shared read contracts:** FastAPI may read approved file identifiers, metadata, and filter values through documented read-only views or a versioned internal contract. Next.js receives retrieval results and evidence through FastAPI; it does not query embeddings or implement retrieval.
-- **Extension/index ownership:** PostgreSQL extensions such as pgvector and indexes spanning AI-owned data are created through one agreed database setup/migration process, not independently by both services.
+- **Next.js/Prisma owns the `app` schema:** `files`, `search_queries`, `search_result_events`, `file_access_events`, and `user_preferences`.
+- **FastAPI/SQLAlchemy/Alembic owns the `ai` schema:** `file_processing_runs`, `document_chunks`, `chunk_embeddings`, and `agent_execution_traces`.
+- **No initial `users` table:** the application is single-user. User columns are not required for the initial schema.
+- **Logical cross-service identity:** AI tables store `file_id` values generated by Next.js, but do not declare foreign keys to `app.files`.
+- **Shared database setup:** the database administrator performs the initial pgvector extension setup. Prisma migrations own `app` objects, Alembic migrations own `ai` objects, and no cross-schema views or additional database roles are introduced initially.
 
 Prisma migrations are authoritative for application-owned tables. AI-service migrations, whether Alembic or reviewed SQL, are authoritative only for AI-owned tables. No service may alter the other service’s tables, and no migration may assume an uncoordinated schema change by the other service.
 
 ### 6.2 Entities
 
-**users**
-
-- `id`, display name, status, timestamps.
-
-The initial deployment has one seeded local user and no login flow. An authentication identifier and additional users are deferred until multi-user support becomes an explicit requirement.
-
 **files**
 
-- `id`, owner or collection reference, canonical relative path, filename, extension, MIME type, size, checksum, created/modified timestamps, extraction status, indexing status, error summary, timestamps.
+- `id`, canonical relative path, filename, extension, MIME type, size, checksum, `catalog_status`, deletion metadata, source timestamps, and record timestamps.
+- `catalog_status` is application-owned and controls visibility. A soft-deleted file is excluded from all new search results.
+- File IDs are generated by Next.js, never reused, and are immutable. Changed content at the same identity keeps the file ID and creates a new processing run; a move or delete-then-replace creates a new file ID.
 
-**file_chunks**
+**file_processing_runs**
 
-- `id`, `file_id`, chunk ordinal, page/sheet/section metadata, extracted text, normalized search text, token or character counts, timestamps.
+- `id`, logical `file_id`, source checksum, `status`, processing configuration, error details, activation metadata, and timestamps.
+- `status` controls the AI processing lifecycle and is independent of `app.files.catalog_status`.
+- A new run remains non-active until chunks and embeddings are complete. Inside one transaction, the previous active run is first marked superseded, then the new successfully processed run is marked active, and the transaction is committed. A partial unique index permits only one active run per file. If either update fails, the transaction rolls back and the previous active run is preserved. Failed runs never deactivate a previous active run.
+
+**document_chunks**
+
+- `id`, `processing_run_id`, logical `file_id`, chunk ordinal, page/sheet/section metadata, extracted text, normalized search text, token or character counts, and timestamps.
+- An AI-owned composite constraint ensures the chunk's `(processing_run_id, file_id)` matches its processing run. There is no foreign key to `app.files`.
 
 **chunk_embeddings**
 
-- `chunk_id`, model name/version, vector, embedding dimensions, created timestamp.
+- `id`, `chunk_id`, model name/version, vector, and timestamps.
+- The embedding model and vector dimension remain provisional until benchmarking. Redundant dimension metadata is omitted initially; the vector column definition and model configuration must agree when implemented.
 
-An embedding may be stored in the chunk table if only one model is ever supported. A separate table is preferable for model comparison and controlled re-indexing.
+The separate embedding table supports controlled re-indexing and model comparison without adding multiple vector dimensions before they are needed.
 
 **search_queries**
 
-- `id`, `user_id` nullable for single-user mode, raw query or privacy-safe representation, normalized query, filters, selected strategy, trace id, created timestamp.
-
-Do not retain raw queries indefinitely without a retention decision.
+- `id`, raw query or privacy-safe representation, normalized query, filters, selected strategy, trace reference, and created timestamp.
+- Historical search records are retained for the initial academic project; no retention subsystem is introduced.
 
 **search_result_events**
 
@@ -382,27 +387,32 @@ This supports evaluation of interaction signals without duplicating complete res
 
 **file_access_events**
 
-- `id`, `user_id`, `file_id`, action, timestamp, success indicator.
+- `id`, `file_id`, action, timestamp, and success indicator.
 
 **user_preferences**
 
-- `user_id`, preference key/value or typed preference columns, personalization enabled flag, timestamps.
+- A single application preference record containing preference values, personalization enabled flag, and timestamps.
+
+**agent_execution_traces**
+
+- `id`, search or query reference, bounded attempts/tool decisions, redacted inputs, result counts, timings, model metadata, termination reason, and timestamps.
+- Historical traces are retained for the initial academic project. Full document contents and unrestricted prompts are not stored by default.
 
 ### 6.3 Relationships
 
-- One user can own or access many files.
-- One file has many chunks.
-- One chunk can have one embedding per embedding model.
-- One user can create many search queries.
+- One `app.files` record can have many `ai.file_processing_runs`.
+- One processing run has many `ai.document_chunks`.
+- One chunk can have one embedding per embedding model/version.
 - One search query can produce many result events.
-- One user can create many file access events.
-- A user has one preference record or a small set of typed preference records.
+- One file can have many access events.
+- The single-user application has one preference record.
+- AI `file_id` values are logical references; service-owned foreign keys do not cross the `app`/`ai` boundary.
 
 ### 6.4 Tables deliberately not included initially
 
-- Separate sessions table unless authentication requires it.
+- A `users` or authentication table.
 - Separate recommendation table; recommendations are derived from query results and recorded through result events.
-- Separate agent table; workflow traces can be stored in a trace JSON field or a small trace-event table only if observability requires durable querying.
+- Separate agent or trace-event tables; bounded workflow data is stored in `agent_execution_traces`.
 - Separate vector database schema; pgvector is sufficient for the initial scale.
 
 ## 7. Agentic AI Design
@@ -675,7 +685,7 @@ For each configuration, export per-query ranked file IDs and graded labels befor
 ### Phase 2 — Database and file catalog
 
 - **Objective:** Integrate PostgreSQL and enforce ownership boundaries.
-- **Tasks:** Configure Prisma for Next.js-owned catalog, preference, and history tables; configure SQLAlchemy and restricted AI migrations for chunks, embeddings, and AI status; enable pgvector and full-text search through one ordered database setup; document read-only views/shared contracts; implement path and checksum rules.
+- **Tasks:** Configure Prisma for Next.js-owned catalog, preference, and history tables; configure SQLAlchemy and restricted AI migrations for chunks, embeddings, and AI status; enable pgvector and full-text search through one ordered database setup; document internal service contracts; implement file authorization and checksum rules.
 - **Dependencies:** Phase 1.
 - **Expected output:** Migratable PostgreSQL schema with non-overlapping Prisma/AI ownership and catalog operations.
 - **Testing criteria:** Both migration paths are tested in isolation and together; extension/index checks, constraints, duplicate detection, and path-security tests pass.
