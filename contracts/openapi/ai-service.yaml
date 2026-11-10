@@ -1,1 +1,32 @@
-# Placeholder for the versioned Next.js-to-FastAPI OpenAPI contract.
+openapi: 3.1.0
+info:
+  title: File Recommendation AI Service
+  version: 0.1.0
+  description: Internal HTTP contract used by the Next.js application.
+servers:
+  - url: http://127.0.0.1:8000
+    description: Local development
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Check AI service health
+      responses:
+        "200":
+          description: AI service is available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          example: ok
