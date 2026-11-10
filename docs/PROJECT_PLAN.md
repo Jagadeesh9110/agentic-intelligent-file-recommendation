@@ -110,7 +110,7 @@ The initial system is explicitly single-user. Multi-user accounts, shared collec
 - **Reliability:** A failed file must not prevent other files from indexing; failures must be visible.
 - **Security:** Validate paths, prevent unauthorized file access, and protect stored user data.
 - **Privacy:** Do not send document content to external model providers in the initial design.
-- **Maintainability:** Prefer a modular monolith and explicit interfaces over premature services.
+- **Maintainability:** Use two clearly bounded application services and explicit internal contracts; do not introduce additional services.
 - **Testability:** Retrieval components, parsing, orchestration, APIs, and evaluation must be independently testable.
 - **Explainability:** Results should expose retrieval sources and high-level ranking reasons.
 - **Reproducibility:** Record model names, preprocessing settings, and evaluation dataset versions.
@@ -132,7 +132,7 @@ The initial system is explicitly single-user. Multi-user accounts, shared collec
 - Supported formats and extraction quality will be limited by selected libraries.
 - The embedding model and cross-encoder must run within available local CPU/GPU and memory limits.
 - File access is limited to one explicitly configured directory tree and the single user’s local permissions.
-- The first release will use one backend deployment and one PostgreSQL database.
+- The first release will use one Next.js application service, one Python AI service, and one PostgreSQL database, deployable together on one machine.
 - Evaluation relevance labels will be created manually and may not represent every user population.
 
 ### 2.6 Security and privacy requirements
@@ -203,20 +203,22 @@ The initial system is explicitly single-user. Multi-user accounts, shared collec
 
 | Technology | Purpose and value | Alternatives | Assessment |
 |---|---|---|---|
-| Next.js | React-based UI, routing, and a maintainable TypeScript application shell | React with Vite, server-rendered templates, or a simple HTML client | Reasonable if a polished UI is required; its server features should not duplicate the FastAPI backend. |
+| Next.js | React-based UI, App Router, and the main application boundary | React with Vite, server-rendered templates, or a simple HTML client | Recommended. Use Route Handlers for application API endpoints; do not add a separate Express server. |
 | TypeScript | Static checking for UI state, API contracts, and result rendering | JavaScript | Recommended for maintainability. |
 | Tailwind CSS | Rapid consistent styling for a search-oriented prototype | CSS modules, plain CSS, or a component library | Optional; use only if the team is comfortable with it. Plain CSS is simpler for a small UI. |
+| Prisma ORM | Type-safe application data access from Next.js to PostgreSQL | Direct SQL, Drizzle, or SQLAlchemy-only access | Recommended for application-owned tables, subject to verified PostgreSQL/pgvector compatibility. Prisma must not own or rewrite AI-service tables. |
 
-**Recommendation:** Next.js, TypeScript, and Tailwind CSS if the project includes a modern UI. Keep business logic and data access in FastAPI rather than Next.js route handlers.
+**Recommendation:** Next.js App Router, TypeScript, Route Handlers, Prisma, and optionally Tailwind CSS. Route Handlers own application APIs and application-level business logic; AI-specific processing remains behind the internal FastAPI API.
 
-### 4.2 Backend
+### 4.2 Application backend and AI service
 
 | Technology | Purpose and value | Alternatives | Assessment |
 |---|---|---|---|
-| Python | Strong ecosystem for NLP, parsing, evaluation, and experimentation | Node.js or Java | Recommended because the retrieval and file-processing ecosystem is Python-centric. |
-| FastAPI | Typed HTTP API, validation, and interactive API documentation | Flask, Django REST Framework | Recommended for a focused API; Django would add unnecessary framework surface. |
-| SQLAlchemy | Database models, queries, and transaction management | SQLModel, asyncpg directly, Django ORM | Recommended if relational modeling and portability matter. SQLModel can reduce boilerplate but is an additional abstraction choice. |
-| Pydantic | Request/response validation and configuration models | Dataclasses plus manual validation | Recommended through FastAPI. |
+| Next.js Route Handlers | Main application API endpoints, request handling, file catalog operations, preferences, history, and calls to the AI service | Separate Express or Python application API | Required by the finalized architecture; no separate Express backend is needed. |
+| Python | Strong ecosystem for NLP, parsing, evaluation, and experimentation | Node.js or Java | Recommended for the dedicated AI service. |
+| FastAPI | Internal typed HTTP API for AI-specific processing and orchestration | Flask, Django REST Framework | Recommended for the dedicated AI service, not as the application’s only backend. |
+| SQLAlchemy | AI-service access to AI-owned PostgreSQL tables where appropriate | SQLModel, asyncpg directly | Recommended only for AI-owned persistence; Prisma remains the application data-access layer. |
+| Pydantic | Request/response validation and internal AI-service contracts | Dataclasses plus manual validation | Recommended through FastAPI and for validating cross-service payloads. |
 
 ### 4.3 Database and search
 
@@ -225,7 +227,7 @@ The initial system is explicitly single-user. Multi-user accounts, shared collec
 | PostgreSQL | Durable metadata, histories, filters, and transactions | SQLite for a single-user prototype | Recommended if pgvector and full-text search are part of the study. SQLite is simpler but changes the intended hybrid-search experiment. |
 | pgvector | Stores and searches chunk embeddings in PostgreSQL | FAISS, Chroma, Qdrant, Elasticsearch/OpenSearch | Recommended for one integrated persistence layer. A separate vector database is unnecessary initially. |
 | PostgreSQL full-text search | Lexical retrieval and ranking | SQLite FTS5, Elasticsearch/OpenSearch | Recommended for consistency with the primary database. |
-| Alembic | Versioned schema migrations | Manual SQL scripts, Django migrations | Recommended with SQLAlchemy; migration history is important even for a capstone. |
+| Alembic | Versioned migrations for AI-owned tables, if needed | Manual SQL scripts | Optional and restricted to AI-owned tables; it must not conflict with Prisma migrations. |
 
 ### 4.4 AI, retrieval, and processing
 
@@ -251,47 +253,43 @@ The initial system is explicitly single-user. Multi-user accounts, shared collec
 
 ### 4.6 Final recommended stack
 
-- **Frontend:** Next.js + TypeScript + Tailwind CSS.
-- **Backend:** Python + FastAPI + Pydantic + SQLAlchemy.
-- **Database:** PostgreSQL + pgvector + PostgreSQL full-text search + Alembic.
+- **Frontend and main application backend:** Next.js App Router + TypeScript + Route Handlers + Prisma ORM, with optional Tailwind CSS.
+- **Dedicated AI backend:** Python + FastAPI + Pydantic + Sentence Transformers + SQLAlchemy where appropriate.
+- **Database:** PostgreSQL + pgvector + PostgreSQL full-text search. Prisma and any AI-service migration tooling must use an explicitly defined ownership boundary.
 - **Processing:** PyMuPDF, python-docx, pandas/openpyxl, and plain-text readers.
 - **Retrieval:** Sentence Transformers with `all-MiniLM-L6-v2` as the first embedding baseline, RRF, and an optional cross-encoder.
 - **Agent workflow:** A custom bounded Python orchestration module with explicit tools and trace records.
 - **Testing:** pytest, API contract tests, and optional Postman collections.
-- **Deployment:** Start as a single-machine modular monolith. Add a background worker only when ingestion duration or reliability demonstrates the need.
+- **Deployment:** Two application services on one machine or deployment: the Next.js application service and the Python AI service. Do not introduce additional microservices or a separate Express server.
 
 ## 5. System Architecture
 
 ### 5.1 Architectural style
 
-Use a modular monolith:
+Use a two-service hybrid application, not a collection of microservices:
 
 ```text
-+------------------+       HTTP/JSON        +-----------------------------+
-| Next.js frontend | <--------------------> | FastAPI application          |
-| Search UI        |                         | API + orchestration          |
-| Ingestion UI     |                         | retrieval + personalization  |
-+------------------+                         +---------------+-------------+
-                                                           |
-                                      +--------------------+--------------------+
-                                      |                                         |
-                              +-------v--------+                        +-------v--------+
-                              | PostgreSQL      |                        | Local file roots |
-                              | metadata       |                        | approved inputs |
-                              | FTS + pgvector |                        +-----------------+
-                              +----------------+
++------------------+       +-------------------------+       +----------------------+
+| Next.js frontend | ----> | Next.js Route Handlers | ----> | Python FastAPI AI     |
+| App Router       |       | application API        |       | service               |
++------------------+       +------------+------------+       +----------+-----------+
+                                          |                            |
+                                          +-------------+--------------+
+                                                        |
+                                              +---------v---------+
+                                              | PostgreSQL        |
+                                              | full-text +       |
+                                              | pgvector          |
+                                              +-------------------+
 ```
 
-The backend is divided into modules, not separately deployed services:
+The initial system remains single-user and may run both services on one machine. The two services have distinct responsibilities:
 
-- API and authentication boundary.
-- File catalog and ingestion coordinator.
-- Format-specific extraction adapters.
-- Chunking and embedding pipeline.
-- Keyword, semantic, fusion, and reranking retrieval modules.
-- Agent workflow and trace recorder.
-- Personalization and history module.
-- Evaluation and administration utilities.
+- **Next.js application service:** frontend pages/components, Route Handler API endpoints, file catalog, application-level business logic, search request handling, user preferences/history, and communication with FastAPI.
+- **Python AI service:** document extraction/processing, chunking, embedding generation, semantic retrieval, hybrid retrieval/RRF, optional reranking, bounded agentic orchestration, and retrieval evaluation.
+- **PostgreSQL:** shared physical database with explicitly separated table ownership. It provides application persistence, AI indexing data, PostgreSQL full-text search, and pgvector.
+
+Neither service is an unrestricted peer writer. Each service writes only its owned tables and reads shared data only through documented contracts or approved read-only views.
 
 ### 5.2 File ingestion and content extraction
 
@@ -320,21 +318,35 @@ For the target 300–500-file corpus, the first implementation may run the scan 
 7. A cross-encoder optionally reranks only the top candidate set.
 8. Chunk scores are aggregated to file-level results.
 9. Personalization provides bounded tie-breaker or boost signals.
-10. The response includes results, evidence, timings, and a trace identifier.
+10. FastAPI returns a typed AI result to the Next.js Route Handler.
+11. The Route Handler applies application-level policy, records user history, and returns the frontend response with evidence, timings, and a trace identifier.
 
 ### 5.4 Component communication
 
-- Frontend to backend: versioned JSON HTTP APIs.
-- Backend to PostgreSQL: SQLAlchemy transactions and parameterized queries.
-- Backend to file system: allowlisted, validated local paths through an ingestion/access adapter.
-- Backend to embedding models: local Python inference interface.
-- Backend modules: typed Python interfaces and domain objects rather than direct cross-module database access.
+- Frontend to Next.js: same-origin calls to versioned Route Handler endpoints.
+- Next.js to FastAPI: internal versioned HTTP/JSON APIs for AI-related operations only. The browser does not call FastAPI directly.
+- FastAPI to PostgreSQL: SQLAlchemy transactions and parameterized queries for AI-owned tables and approved retrieval views.
+- Next.js to PostgreSQL: Prisma for application-owned tables such as the file catalog, search history, access events, and user preferences.
+- FastAPI to file system: allowlisted, validated local paths through the AI ingestion adapter; the Route Handler authorizes the user request before forwarding it.
+- Service contracts: Pydantic request/response schemas define ingestion, extraction, search, reranking, trace, and error payloads. Next.js validates the same contract at its boundary and must not reimplement retrieval logic.
+- Database migrations: Prisma migrations are authoritative for application-owned tables. Any Alembic/SQL migrations are restricted to AI-owned tables. Shared tables, extensions, indexes, and views require an explicitly agreed migration owner and a single ordered migration process; neither service may run uncontrolled schema changes.
 
 ## 6. Database Design
 
 The initial schema should remain small and normalized. Embeddings belong to chunks because different portions of one file have different meanings.
 
-### 6.1 Entities
+### 6.1 Service ownership and migration boundary
+
+Both services use the same PostgreSQL database, but ownership is explicit:
+
+- **Next.js/Prisma owns:** `users`, `files` as the application catalog, `search_queries`, `search_result_events`, `file_access_events`, and `user_preferences`.
+- **FastAPI/SQLAlchemy owns:** `file_chunks`, `chunk_embeddings`, ingestion/extraction status details, and AI execution trace/evaluation tables if durable storage is required.
+- **Shared read contracts:** FastAPI may read approved file identifiers, metadata, and filter values through documented read-only views or a versioned internal contract. Next.js receives retrieval results and evidence through FastAPI; it does not query embeddings or implement retrieval.
+- **Extension/index ownership:** PostgreSQL extensions such as pgvector and indexes spanning AI-owned data are created through one agreed database setup/migration process, not independently by both services.
+
+Prisma migrations are authoritative for application-owned tables. AI-service migrations, whether Alembic or reviewed SQL, are authoritative only for AI-owned tables. No service may alter the other service’s tables, and no migration may assume an uncoordinated schema change by the other service.
+
+### 6.2 Entities
 
 **users**
 
@@ -376,7 +388,7 @@ This supports evaluation of interaction signals without duplicating complete res
 
 - `user_id`, preference key/value or typed preference columns, personalization enabled flag, timestamps.
 
-### 6.2 Relationships
+### 6.3 Relationships
 
 - One user can own or access many files.
 - One file has many chunks.
@@ -386,7 +398,7 @@ This supports evaluation of interaction signals without duplicating complete res
 - One user can create many file access events.
 - A user has one preference record or a small set of typed preference records.
 
-### 6.3 Tables deliberately not included initially
+### 6.4 Tables deliberately not included initially
 
 - Separate sessions table unless authentication requires it.
 - Separate recommendation table; recommendations are derived from query results and recorded through result events.
@@ -394,6 +406,8 @@ This supports evaluation of interaction signals without duplicating complete res
 - Separate vector database schema; pgvector is sufficient for the initial scale.
 
 ## 7. Agentic AI Design
+
+The bounded agentic workflow runs in the Python FastAPI AI service. Next.js validates the user request, applies application policy, and presents the result, but it does not make retrieval-strategy decisions or duplicate the orchestration logic.
 
 ### 7.1 What makes the system agentic
 
@@ -478,6 +492,8 @@ Do not store full document text or unrestricted model prompts in traces by defau
 
 ## 8. Retrieval Architecture
 
+Retrieval is implemented in the Python AI service. The Next.js service requests retrieval through the internal FastAPI contract and is responsible only for application-level filters, user context, history, and response presentation.
+
 ### 8.1 Keyword retrieval
 
 Normalize extracted text and use PostgreSQL full-text search with a stored search vector and appropriate indexes. Search should cover chunk text and selected metadata. Exact filename and path matches can receive a controlled boost, but should not overwhelm content relevance.
@@ -541,56 +557,82 @@ An initial scoring policy can reserve most ranking weight for retrieval relevanc
 
 ## 10. API Planning
 
-These are planned contracts, not implementations.
+These are planned contracts, not implementations. The browser calls only Next.js Route Handlers. Route Handlers call the internal FastAPI service for AI operations; FastAPI is not exposed directly to the browser.
 
 ### 10.1 Health and configuration
 
-- `GET /health` — liveness.
-- `GET /ready` — readiness for database and model dependencies.
-- `GET /api/v1/config/capabilities` — supported file types and enabled retrieval features.
+**Next.js Route Handlers**
+
+- `GET /api/health` — application liveness.
+- `GET /api/ready` — application and dependency readiness.
+- `GET /api/v1/config/capabilities` — application-visible supported features.
+
+**Internal FastAPI AI service**
+
+- `GET /internal/health` — AI-service liveness.
+- `GET /internal/ready` — AI-service database and model readiness.
+- `GET /internal/v1/capabilities` — supported extraction and retrieval capabilities.
 
 ### 10.2 File catalog and ingestion
 
-- `POST /api/v1/files/scan` — scan an approved source and discover changes.
-- `POST /api/v1/files` — register or ingest a selected file.
-- `GET /api/v1/files` — list files with status and filters.
+**Next.js Route Handlers**
+
+- `POST /api/v1/files/scan` — authorize and request a scan of an approved source.
+- `POST /api/v1/files` — register a selected file and request processing.
+- `GET /api/v1/files` — list application catalog files with status and filters.
 - `GET /api/v1/files/{file_id}` — file metadata and indexing status.
 - `POST /api/v1/files/{file_id}/reindex` — request re-indexing.
-- `DELETE /api/v1/files/{file_id}` — remove indexed representation and history according to retention rules.
-- `GET /api/v1/ingestion/jobs/{job_id}` — progress, warnings, and failures.
+- `DELETE /api/v1/files/{file_id}` — remove the application catalog record and request AI-index cleanup.
+- `GET /api/v1/ingestion/jobs/{job_id}` — return application-visible progress.
+
+**Internal FastAPI AI service**
+
+- `POST /internal/v1/ingestion/jobs` — extract, chunk, embed, and index an authorized file selection.
+- `GET /internal/v1/ingestion/jobs/{job_id}` — return processing progress and extraction failures.
+- `DELETE /internal/v1/files/{file_id}/index` — remove AI-owned chunks and embeddings for an authorized file.
 
 ### 10.3 Search and recommendations
 
-- `POST /api/v1/search` — execute a query with filters and optional strategy controls.
-- `GET /api/v1/search/{trace_id}` — retrieve a trace or result metadata subject to privacy policy.
-- `GET /api/v1/files/{file_id}/evidence` — permitted matching chunks and source context.
-- `POST /api/v1/search/{search_id}/feedback` — optional relevance or result feedback.
+**Next.js Route Handlers**
+
+- `POST /api/v1/search` — validate user query and filters, call FastAPI, record history, and return recommendations.
+- `GET /api/v1/search/{trace_id}` — retrieve permitted trace metadata.
+- `GET /api/v1/files/{file_id}/evidence` — return evidence obtained through FastAPI.
+- `POST /api/v1/search/{search_id}/feedback` — record optional relevance feedback.
+
+**Internal FastAPI AI service**
+
+- `POST /internal/v1/search` — execute keyword, semantic, hybrid, adaptive, and optional reranked retrieval.
+- `GET /internal/v1/traces/{trace_id}` — return redacted execution trace and retrieval metadata.
 
 ### 10.4 User history and preferences
 
-- `GET /api/v1/me/preferences` and `PUT /api/v1/me/preferences`.
+- `GET /api/v1/me/preferences` and `PUT /api/v1/me/preferences` — Next.js/Prisma application APIs.
 - `GET /api/v1/me/history` — paginated history with redaction policy.
 - `DELETE /api/v1/me/history` — clear history.
 - `POST /api/v1/me/personalization/disable` — disable personalization.
 
 ### 10.5 Evaluation and administration
 
-- `GET /api/v1/admin/ingestion/failures` — review extraction/index failures.
-- `POST /api/v1/admin/evaluation/runs` — run an offline evaluation configuration.
-- `GET /api/v1/admin/evaluation/runs/{run_id}` — retrieve metrics and configuration.
+- `GET /api/v1/admin/ingestion/failures` — Next.js endpoint for application-visible failures.
+- `POST /internal/v1/evaluation/runs` — FastAPI endpoint or CLI entry point for offline evaluation.
+- `GET /internal/v1/evaluation/runs/{run_id}` — retrieve metrics and configuration.
 
-All endpoints require request validation, consistent error responses, pagination limits, authorization checks, and explicit rate/size limits where relevant.
+All endpoints require request validation, consistent error responses, pagination limits, authorization checks, and explicit rate/size limits where relevant. Internal FastAPI endpoints must additionally authenticate service-to-service requests and reject browser-originated calls. Cross-service request and response schemas must be versioned and include correlation/trace identifiers.
 
 ## 11. Testing and Evaluation
 
 ### 11.1 Test layers
 
-- **Unit tests:** path validation, parsers, chunking, query normalization, RRF, score aggregation, personalization caps, and workflow transitions.
-- **Integration tests:** PostgreSQL full-text and pgvector queries, migrations, ingestion-to-search flow, and transaction behavior.
-- **API tests:** request validation, authorization, error responses, pagination, and response schemas.
-- **End-to-end tests:** ingest approved files, search, inspect evidence, open a permitted file, and clear history.
+- **Next.js unit tests:** Route Handler validation, application policy, Prisma repositories, history/preferences logic, and response mapping.
+- **FastAPI unit tests:** path validation, parsers, chunking, query normalization, RRF, score aggregation, personalization inputs, AI decision validation, and workflow transitions.
+- **Service integration tests:** PostgreSQL full-text and pgvector queries, Prisma migrations, AI-service migrations, indexes, ingestion-to-search flow, and transaction behavior.
+- **Internal API contract tests:** versioned Next.js-to-FastAPI payloads, errors, timeouts, correlation IDs, and redaction rules.
+- **End-to-end tests:** through the Next.js frontend/API, ingest approved files, search, inspect evidence, open a permitted file, and clear history.
 - **Evaluation tests:** fixed dataset, fixed model/configuration, repeatable metric generation.
 - **Failure tests:** corrupt files, unsupported types, inaccessible paths, model failures, empty results, and timeout/retry behavior.
+
+The Next.js and FastAPI services must be testable independently before the complete-system tests run. The browser must never be required to test the internal AI service, and FastAPI tests must not depend on Next.js rendering.
 
 ### 11.2 Metrics
 
@@ -623,38 +665,38 @@ For each configuration, export per-query ranked file IDs and graded labels befor
 
 ### Phase 1 — Repository and domain foundation
 
-- **Objective:** Create the project structure and domain contracts.
-- **Tasks:** Initialize frontend/backend project manifests; define configuration handling; create domain types; establish linting, formatting, and pytest structure; define error and logging conventions.
+- **Objective:** Create both application services and their versioned contracts.
+- **Tasks:** Initialize the Next.js App Router application with TypeScript and Route Handler conventions; initialize the Python FastAPI AI service with Pydantic contracts; define service configuration, correlation IDs, error formats, logging, and local development commands; establish TypeScript and pytest checks.
 - **Dependencies:** Phase 0.
-- **Expected output:** Buildable empty shells and documented module boundaries.
-- **Testing criteria:** Static checks pass; health endpoint and frontend shell can be exercised.
+- **Expected output:** Buildable Next.js and FastAPI service shells with documented internal HTTP contracts.
+- **Testing criteria:** Both services pass independent static checks; Next.js health/readiness routes and FastAPI health/readiness routes can be exercised.
 - **Completion criteria:** Local development workflow is reproducible without application-specific shortcuts.
 
 ### Phase 2 — Database and file catalog
 
-- **Objective:** Persist users, files, chunks, embeddings metadata, and histories.
-- **Tasks:** Implement SQLAlchemy models and Alembic migrations; add indexes and constraints; add repository interfaces; implement path and checksum rules.
+- **Objective:** Integrate PostgreSQL and enforce ownership boundaries.
+- **Tasks:** Configure Prisma for Next.js-owned catalog, preference, and history tables; configure SQLAlchemy and restricted AI migrations for chunks, embeddings, and AI status; enable pgvector and full-text search through one ordered database setup; document read-only views/shared contracts; implement path and checksum rules.
 - **Dependencies:** Phase 1.
-- **Expected output:** Migratable PostgreSQL schema and catalog operations.
-- **Testing criteria:** Migration tests, constraint tests, duplicate detection, and path-security tests pass.
-- **Completion criteria:** A file can be registered and its lifecycle status can be queried.
+- **Expected output:** Migratable PostgreSQL schema with non-overlapping Prisma/AI ownership and catalog operations.
+- **Testing criteria:** Both migration paths are tested in isolation and together; extension/index checks, constraints, duplicate detection, and path-security tests pass.
+- **Completion criteria:** Neither service changes the other’s tables, and a file can be registered with a queryable lifecycle status.
 
 ### Phase 3 — Ingestion and extraction
 
 - **Objective:** Convert supported files into stable searchable chunks.
-- **Tasks:** Implement format adapters; normalize metadata; handle unsupported/corrupt files; chunk text; add incremental re-indexing and deletion behavior.
+- **Tasks:** Implement extraction adapters and chunking in FastAPI; define the Next.js-to-FastAPI ingestion request; have Route Handlers authorize explicit file/directory scans and update application status; handle unsupported/corrupt files, idempotency, checksum changes, and cleanup.
 - **Dependencies:** Phase 2.
-- **Expected output:** Ingestion pipeline with status reporting.
-- **Testing criteria:** Fixture tests for every supported format, malformed input, idempotency, and checksum changes.
+- **Expected output:** Cross-service ingestion pipeline with status reporting and no uncontrolled writes.
+- **Testing criteria:** FastAPI fixture tests for every supported format, Next.js contract tests, malformed input, idempotency, checksum changes, and service failure handling.
 - **Completion criteria:** Approved fixture files are extracted and chunked with no silent failures.
 
 ### Phase 4 — Embeddings and baseline retrieval
 
 - **Objective:** Make indexed chunks searchable.
-- **Tasks:** Generate and persist embeddings; add pgvector indexes/configuration; implement keyword and semantic retrieval; aggregate chunks to files.
+- **Tasks:** Generate and persist embeddings in FastAPI; add pgvector indexes/configuration; implement keyword and semantic retrieval; define the FastAPI search contract; have Next.js Route Handlers validate requests, call FastAPI, and map results to application responses.
 - **Dependencies:** Phase 3.
-- **Expected output:** Reproducible keyword and semantic search APIs.
-- **Testing criteria:** Retrieval integration tests, empty-result tests, filter tests, and model metadata checks.
+- **Expected output:** Reproducible internal AI search APIs and Next.js application search APIs.
+- **Testing criteria:** FastAPI retrieval integration tests, Next.js route/contract tests, cross-service timeout/error tests, empty-result tests, filter tests, and model metadata checks.
 - **Completion criteria:** Baseline queries return expected evidence from the fixture corpus.
 
 ### Phase 5 — Hybrid retrieval and reranking
@@ -669,28 +711,28 @@ For each configuration, export per-query ranked file IDs and graded labels befor
 ### Phase 6 — Bounded agentic workflow
 
 - **Objective:** Add explicit adaptive orchestration without unnecessary autonomous agents.
-- **Tasks:** Implement query understanding, tool registry, strategy selection, sufficiency evaluator, retry budget, trace recording, and safe fallback behavior.
+- **Tasks:** Implement query understanding, tool registry, constrained AI-assisted strategy selection, deterministic safeguards, sufficiency evaluator, retry budget, trace recording, and safe fallback behavior in FastAPI; expose the trace through the internal contract and proxy only approved metadata through Next.js.
 - **Dependencies:** Phase 5.
-- **Expected output:** Agentic search workflow with trace identifiers and termination reasons.
-- **Testing criteria:** State-transition tests, retry-budget tests, tool-failure tests, timeout tests, and trace-redaction tests.
+- **Expected output:** Agentic search workflow with trace identifiers, termination reasons, and a tested cross-service contract.
+- **Testing criteria:** FastAPI state-transition tests, retry-budget tests, tool-failure tests, timeout tests, trace-redaction tests, and Next.js proxy tests.
 - **Completion criteria:** The workflow demonstrably selects tools and adapts on weak results without bypassing deterministic safeguards.
 
 ### Phase 7 — Personalization and user experience
 
 - **Objective:** Provide a usable search UI and conservative personalization.
-- **Tasks:** Build search, filters, result evidence, ingestion status, feedback, preferences, and history controls; implement bounded history/access signals.
+- **Tasks:** Build Next.js pages/components and Route Handlers for search, filters, result evidence, ingestion status, feedback, preferences, and history; implement bounded history/access signals in application logic; pass only necessary context to FastAPI.
 - **Dependencies:** Phase 6 and a usable API contract.
 - **Expected output:** End-to-end user workflow.
-- **Testing criteria:** API/UI integration tests, access-control tests, opt-out and deletion tests, and usability review.
+- **Testing criteria:** Next.js component/Route Handler tests, FastAPI contract tests, end-to-end cross-service tests, access-control tests, opt-out and deletion tests, and usability review.
 - **Completion criteria:** A user can ingest, search, inspect evidence, and control personalization.
 
 ### Phase 8 — Evaluation, hardening, and demonstration
 
 - **Objective:** Measure the system and prepare the capstone demonstration.
-- **Tasks:** Label the evaluation dataset; run baselines and adaptive variants; measure quality/latency; fix reproducible defects; document limitations and setup.
+- **Tasks:** Label the fixed dataset; run FastAPI retrieval baselines and adaptive variants through the reproducible evaluation runner; measure service and end-to-end quality/latency; run complete-system flows; fix reproducible defects; document two-service setup and limitations.
 - **Dependencies:** Phases 1–7.
-- **Expected output:** Evaluation report, reproducible run instructions, test evidence, and demonstration scenario.
-- **Testing criteria:** Full automated suite passes; metrics and configurations are archived; security/privacy checklist passes.
+- **Expected output:** Evaluation report, reproducible two-service run instructions, independent and end-to-end test evidence, and demonstration scenario.
+- **Testing criteria:** Next.js and FastAPI suites pass independently; complete-system tests pass; metrics and configurations are archived; service-boundary and security/privacy checklists pass.
 - **Completion criteria:** Core requirements are demonstrated and all excluded features remain out of scope unless explicitly approved.
 
 ## 13. Risks and Limitations
@@ -702,7 +744,8 @@ For each configuration, export per-query ranked file IDs and graded labels befor
 - Cross-encoder reranking can improve quality while making interactive search slow.
 - Format extraction may lose tables, layout, or context.
 - Chunk size and overlap choices can materially affect results.
-- A modular monolith can become tightly coupled if module boundaries are not enforced.
+- Cross-service contracts can drift if Next.js and FastAPI schemas are changed independently.
+- Prisma and AI-service migrations can conflict if ownership and execution order are not enforced.
 
 ### Dataset and evaluation risks
 
@@ -732,6 +775,9 @@ For each configuration, export per-query ranked file IDs and graded labels befor
 - Start with a small, explicit format set and fixture corpus.
 - Keep deterministic retrieval as the reliable fallback.
 - Bound candidate counts, retries, tokens, and execution time.
+- Keep AI-specific logic in FastAPI and application logic in Next.js; do not duplicate retrieval or orchestration.
+- Version and contract-test every Next.js-to-FastAPI request and response.
+- Run one ordered database migration process with explicit Prisma and AI-service ownership.
 - Version models, chunking settings, and evaluation datasets.
 - Add security tests before enabling file opening or multi-user access.
 - Defer OCR, cloud connectors, and distributed services until a measured requirement exists.
