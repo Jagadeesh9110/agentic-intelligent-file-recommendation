@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "file-recommendation-ai"
+version = "0.1.0"
+description = "Dedicated AI service for intelligent file recommendation"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi==0.115.12",
+    "pydantic==2.11.3",
+    "pydantic-settings==2.9.1",
+    "uvicorn[standard]==0.34.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx==0.28.1",
+    "pytest==8.3.5",
+    "ruff==0.11.7",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+extend-exclude = [".venv", "evaluation/reports", "evaluation/experiments"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
