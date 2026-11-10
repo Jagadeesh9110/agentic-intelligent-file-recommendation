@@ -1,1 +1,112 @@
-// Placeholder for the application-owned Prisma schema.
+generator client {
+  provider = "prisma-client-js"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["app"]
+}
+
+// Initial assumptions: ACTIVE/DELETED are the only catalog states required for
+// the single-user application; JSON fields hold evolving filter/preferences
+// payloads; traceId is a logical reference to the AI schema.
+enum CatalogStatus {
+  ACTIVE
+  DELETED
+
+  @@map("catalog_status")
+  @@schema("app")
+}
+
+model File {
+  id               String        @id @default(uuid()) @db.Uuid
+  relativePath     String        @map("relative_path") @db.Text
+  filename         String        @db.Text
+  extension        String?       @db.VarChar(32)
+  mimeType         String?       @map("mime_type") @db.VarChar(255)
+  sizeBytes        BigInt        @map("size_bytes")
+  checksum         String        @db.VarChar(128)
+  catalogStatus    CatalogStatus @default(ACTIVE) @map("catalog_status")
+  deletedAt        DateTime?     @map("deleted_at") @db.Timestamptz(6)
+  deletionReason   String?       @map("deletion_reason") @db.Text
+  sourceCreatedAt  DateTime?     @map("source_created_at") @db.Timestamptz(6)
+  sourceModifiedAt DateTime?     @map("source_modified_at") @db.Timestamptz(6)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  searchResultEvents SearchResultEvent[]
+  accessEvents       FileAccessEvent[]
+
+  @@index([catalogStatus])
+  // PostgreSQL-specific partial uniqueness is defined in the initial migration:
+  // only non-deleted files may share neither a relative path nor its identity.
+  @@index([relativePath])
+  @@index([checksum])
+  @@map("files")
+  @@schema("app")
+}
+
+model SearchQuery {
+  id               String   @id @default(uuid()) @db.Uuid
+  rawQuery         String?  @map("raw_query") @db.Text
+  normalizedQuery  String   @map("normalized_query") @db.Text
+  filters          Json?
+  selectedStrategy String?  @map("selected_strategy") @db.VarChar(32)
+  traceId          String?  @map("trace_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  resultEvents SearchResultEvent[]
+
+  @@index([createdAt])
+  @@map("search_queries")
+  @@schema("app")
+}
+
+model SearchResultEvent {
+  id               String   @id @default(uuid()) @db.Uuid
+  searchQueryId    String   @map("search_query_id") @db.Uuid
+  fileId           String   @map("file_id") @db.Uuid
+  rank             Int
+  score            Float?
+  retrievalSources String[] @map("retrieval_sources")
+  // One event represents one file in one query result set.
+  opened           Boolean  @default(false)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  searchQuery SearchQuery @relation(fields: [searchQueryId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  file        File        @relation(fields: [fileId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([searchQueryId, fileId])
+  @@index([fileId, createdAt])
+  @@map("search_result_events")
+  @@schema("app")
+}
+
+model FileAccessEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  fileId    String   @map("file_id") @db.Uuid
+  action    String   @db.VarChar(32)
+  success   Boolean
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  file File @relation(fields: [fileId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([fileId, createdAt])
+  @@map("file_access_events")
+  @@schema("app")
+}
+
+model UserPreference {
+  // The application maintains one row with the default id. The migration adds
+  // CHECK (id = 1) because Prisma does not express this constraint in-schema.
+  id                     Int      @id @default(1)
+  preferenceData         Json?    @map("preference_data")
+  personalizationEnabled Boolean  @default(true) @map("personalization_enabled")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("user_preferences")
+  @@schema("app")
+}
