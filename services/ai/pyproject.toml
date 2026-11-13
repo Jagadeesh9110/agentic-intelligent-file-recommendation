@@ -8,9 +8,17 @@ version = "0.1.0"
 description = "Dedicated AI service for intelligent file recommendation"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "alembic==1.15.2",
     "fastapi==0.115.12",
+    "openpyxl==3.1.5",
+    "pgvector==0.3.6",
+    "psycopg[binary]==3.2.6",
     "pydantic==2.11.3",
     "pydantic-settings==2.9.1",
+    "PyMuPDF==1.25.5",
+    "python-docx==1.1.2",
+    "sqlalchemy==2.0.40",
+    "sentence-transformers==4.1.0",
     "uvicorn[standard]==0.34.2",
 ]
 

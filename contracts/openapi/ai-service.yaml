@@ -20,6 +20,27 @@ paths:
                 $ref: "#/components/schemas/HealthResponse"
               example:
                 status: ok
+  /api/v1/search:
+    post:
+      operationId: searchFiles
+      summary: Search active file chunks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Ranked file recommendations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "422":
+          description: Invalid search request.
+        "503":
+          description: Search service unavailable.
 components:
   schemas:
     HealthResponse:
@@ -30,3 +51,104 @@ components:
         status:
           type: string
           example: ok
+    RetrievalConfig:
+      type: object
+      properties:
+        strategy:
+          type: string
+          enum: [full_text, semantic, hybrid]
+          default: hybrid
+        rrf_constant:
+          type: integer
+          minimum: 1
+          maximum: 1000
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        retrieval:
+          $ref: "#/components/schemas/RetrievalConfig"
+    Recommendation:
+      type: object
+      required:
+        - file_id
+        - chunk_id
+        - text
+        - chunk_ordinal
+        - retrieval_score
+        - reranking_score
+        - retrieval_sources
+        - explanation
+      properties:
+        file_id:
+          type: string
+          format: uuid
+        chunk_id:
+          type: string
+          format: uuid
+        text:
+          type: string
+        chunk_ordinal:
+          type: integer
+        page_number:
+          type: integer
+          nullable: true
+        sheet_name:
+          type: string
+          nullable: true
+        section_name:
+          type: string
+          nullable: true
+        retrieval_score:
+          type: number
+        fused_score:
+          type: number
+          nullable: true
+        reranking_score:
+          type: number
+        retrieval_sources:
+          type: array
+          items:
+            type: string
+        explanation:
+          type: string
+    SearchResponse:
+      type: object
+      required:
+        - trace_id
+        - query
+        - execution_status
+        - strategy
+        - recommendations
+        - execution_summary
+        - tool_calls
+        - refinement_attempted
+      properties:
+        trace_id:
+          type: string
+          format: uuid
+        query:
+          type: string
+        execution_status:
+          type: string
+        strategy:
+          type: string
+        recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Recommendation"
+        execution_summary:
+          type: string
+        tool_calls:
+          type: integer
+        refinement_attempted:
+          type: boolean

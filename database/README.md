@@ -22,7 +22,7 @@ There is no `users` table in the single-user initial design. Next.js generates s
 
 ## Lifecycle rules
 
-`app.files.catalog_status` controls visibility and soft deletion. `ai.file_processing_runs.status` controls extraction and indexing lifecycle. After a new run succeeds, one transaction first marks the previous active run superseded, then marks the new run active, and commits. A partial unique index permits only one active run per file; if either update fails, the transaction rolls back and preserves the previous active run. Cleanup of AI records after deletion is explicit, retryable, and idempotent. Historical events are retained.
+`app.files.catalog_status` controls visibility and soft deletion. `ai.file_processing_runs.status` uses `QUEUED`, `PROCESSING`, `ACTIVE`, `SUPERSEDED`, `FAILED`, and `CANCELLED` for the processing lifecycle. After a new run succeeds, one transaction first marks the previous active run superseded, then marks the new run active, and commits. A partial unique index permits only one active run per file; if either update fails, the transaction rolls back and preserves the previous active run. Cleanup of AI records after deletion is explicit, retryable, and idempotent. Historical events are retained.
 
 Changed content keeps the file ID and creates a new processing run. Moves and delete-then-replace operations create new file IDs, and deleted IDs are never reused.
 

@@ -359,7 +359,7 @@ Prisma migrations are authoritative for application-owned tables. AI-service mig
 **file_processing_runs**
 
 - `id`, logical `file_id`, source checksum, `status`, processing configuration, error details, activation metadata, and timestamps.
-- `status` controls the AI processing lifecycle and is independent of `app.files.catalog_status`.
+- `status` controls the AI processing lifecycle and is independent of `app.files.catalog_status`. The initial status values are `QUEUED`, `PROCESSING`, `ACTIVE`, `SUPERSEDED`, `FAILED`, and `CANCELLED`.
 - A new run remains non-active until chunks and embeddings are complete. Inside one transaction, the previous active run is first marked superseded, then the new successfully processed run is marked active, and the transaction is committed. A partial unique index permits only one active run per file. If either update fails, the transaction rolls back and the previous active run is preserved. Failed runs never deactivate a previous active run.
 
 **document_chunks**

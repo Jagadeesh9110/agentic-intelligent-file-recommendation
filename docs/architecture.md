@@ -45,3 +45,6 @@ A new AI processing run is staged while the previous successful run remains sear
 A partial unique index permits only one active run per file. If either update fails, the transaction rolls back and the previous active run remains active and searchable.
 
 Failed or incomplete runs cannot make a previously active version unavailable.
+
+Processing runs use the statuses `QUEUED`, `PROCESSING`, `ACTIVE`, `SUPERSEDED`,
+`FAILED`, and `CANCELLED`.
