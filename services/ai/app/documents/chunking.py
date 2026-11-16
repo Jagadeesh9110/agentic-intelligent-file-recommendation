@@ -6,6 +6,7 @@ from app.documents.normalization import normalize_text
 
 @dataclass(frozen=True, slots=True)
 class ChunkConfig:
+    # Keep chunk sizing explicit so callers can tune extraction boundaries.
     max_characters: int = 1200
     overlap_characters: int = 120
 
