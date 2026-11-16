@@ -1,3 +1,4 @@
+// Health checks use a short default timeout to keep callers responsive.
 const DEFAULT_TIMEOUT_MS = 3_000;
 
 export type AiHealthResponse = {
