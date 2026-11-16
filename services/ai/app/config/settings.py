@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # Environment-backed defaults keep local development configuration predictable.
     app_name: str = "File Recommendation AI Service"
     environment: str = "development"
     host: str = "127.0.0.1"
