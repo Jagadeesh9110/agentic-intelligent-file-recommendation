@@ -4,6 +4,7 @@ export type ValidSearchRequest = {
   retrieval?: { strategy?: string; rrf_constant?: number };
 };
 
+// Keep request parsing independent from route handlers and transport details.
 export function parseSearchRequest(
   body: unknown,
 ): ValidSearchRequest | null {
