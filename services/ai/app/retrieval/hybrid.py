@@ -16,6 +16,7 @@ DEFAULT_RRF_CONSTANT = 60
 
 @dataclass(frozen=True, slots=True)
 class RetrievalResult:
+    # This immutable shape is shared by keyword and semantic retrieval paths.
     chunk_id: UUID
     file_id: UUID
     text: str
