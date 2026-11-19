@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import time
@@ -63,6 +64,7 @@ class AgentWorkflow:
             raise ValueError("Workflow limits must be greater than zero.")
         if not 0 <= max_refinements <= 1:
             raise ValueError("Workflow refinements must be between zero and one.")
+
         self.retriever = retriever
         self.reranker = reranker
         self.max_tool_calls = max_tool_calls
@@ -79,6 +81,7 @@ class AgentWorkflow:
         rrf_constant: int | None = None,
     ) -> WorkflowResult:
         normalized_query = " ".join(query.split())
+
         if not normalized_query:
             raise ValueError("Search query cannot be empty.")
         if strategy not in ALLOWED_STRATEGIES:
@@ -91,41 +94,69 @@ class AgentWorkflow:
         tool_calls = 0
         refinement_attempted = False
         attempts: list[dict[str, Any]] = []
+
         try:
+            # Retrieve more chunks than the requested number of files.
+            # The reranker applies its own candidate_limit as an upper bound.
+            candidate_limit = max(limit, self.reranker.candidate_limit)
+
             results = self._retrieve(
                 session,
                 normalized_query,
                 strategy,
-                limit,
+                candidate_limit,
                 rrf_constant,
                 attempts,
                 started,
                 tool_calls,
             )
+
             tool_calls = self._tool_count(strategy)
+
             reranked = self.reranker.rerank(normalized_query, results)
+
             tool_calls += 1
             self._check_budget(started, tool_calls)
 
             if not reranked and self.max_refinements:
                 refinement_attempted = True
-                refined_query = normalized_query
+
                 results = self._retrieve(
                     session,
-                    refined_query,
+                    normalized_query,
                     strategy,
-                    limit,
+                    candidate_limit,
                     rrf_constant,
                     attempts,
                     started,
                     tool_calls,
                 )
+
                 tool_calls += self._tool_count(strategy)
-                reranked = self.reranker.rerank(refined_query, results)
+
+                reranked = self.reranker.rerank(normalized_query, results)
+
                 tool_calls += 1
                 self._check_budget(started, tool_calls)
 
-            recommendations = tuple(_recommendation(item) for item in reranked)
+            # Keep only the highest-ranked chunk from each file.
+            recommendations_list: list[Recommendation] = []
+            seen_file_ids: set[UUID] = set()
+
+            for item in reranked:
+                file_id = item.result.file_id
+
+                if file_id in seen_file_ids:
+                    continue
+
+                seen_file_ids.add(file_id)
+                recommendations_list.append(_recommendation(item))
+
+                if len(recommendations_list) >= limit:
+                    break
+
+            recommendations = tuple(recommendations_list)
+
             result = WorkflowResult(
                 trace_id=trace_id,
                 query=normalized_query,
@@ -140,8 +171,13 @@ class AgentWorkflow:
                 tool_calls=tool_calls,
                 refinement_attempted=refinement_attempted,
             )
-            self._persist_trace(session, result, attempts, None, started, rrf_constant)
+
+            self._persist_trace(
+                session, result, attempts, None, started, rrf_constant
+            )
+
             return result
+
         except Exception as error:
             self._persist_trace(
                 session,
@@ -175,6 +211,7 @@ class AgentWorkflow:
     ) -> tuple[RetrievalResult, ...]:
         needed = self._tool_count(strategy)
         self._check_budget(started, current_calls + needed)
+
         if strategy == "full_text":
             results = self.retriever.full_text(session, query, limit=limit)
         elif strategy == "semantic":
@@ -183,9 +220,18 @@ class AgentWorkflow:
             results = self.retriever.hybrid(
                 session, query, limit=limit, rrf_constant=rrf_constant
             )
-        attempts.append({"strategy": strategy, "result_count": len(results)})
+
+        attempts.append(
+            {
+                "strategy": strategy,
+                "result_count": len(results),
+                "requested_limit": limit,
+            }
+        )
+
         if rrf_constant is not None and strategy == "hybrid":
             attempts[-1]["rrf_constant"] = rrf_constant
+
         return results
 
     def _tool_count(self, strategy: str) -> int:
@@ -194,6 +240,7 @@ class AgentWorkflow:
     def _check_budget(self, started: float, calls: int) -> None:
         if calls > self.max_tool_calls:
             raise WorkflowLimitError("Maximum workflow tool-call count exceeded.")
+
         if time.monotonic() - started > self.timeout_seconds:
             raise WorkflowLimitError("Workflow execution timed out.")
 
@@ -215,17 +262,27 @@ class AgentWorkflow:
                 {"tool": source, "allowed": True}
                 for source in ("full_text_search", "semantic_search")
             ],
-            result_counts={"recommendations": len(result.recommendations)},
-            timings={"duration_ms": round((time.monotonic() - started) * 1000, 2)},
-            model_metadata={"rrf_constant": rrf_constant} if rrf_constant else None,
+            result_counts={
+                "recommendations": len(result.recommendations),
+            },
+            timings={
+                "duration_ms": round(
+                    (time.monotonic() - started) * 1000, 2
+                )
+            },
+            model_metadata=(
+                {"rrf_constant": rrf_constant} if rrf_constant else None
+            ),
             termination_reason=error or result.summary,
         )
+
         session.add(trace)
         session.commit()
 
 
 def _recommendation(item: RerankedResult) -> Recommendation:
     result = item.result
+
     return Recommendation(
         file_id=result.file_id,
         chunk_id=result.chunk_id,
@@ -238,5 +295,6 @@ def _recommendation(item: RerankedResult) -> Recommendation:
         fused_score=result.fused_score,
         reranking_score=item.reranking_score,
         retrieval_sources=result.retrieval_sources,
-        explanation="Matched the query through " + ", ".join(result.retrieval_sources),
+        explanation="Matched the query through "
+        + ", ".join(result.retrieval_sources),
     )

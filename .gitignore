@@ -37,3 +37,6 @@ evaluation/reports/*
 evaluation/experiments/*
 !evaluation/reports/.gitkeep
 !evaluation/experiments/.gitkeep
+
+# Uploaded original files
+/storage/
